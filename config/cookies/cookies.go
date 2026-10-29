@@ -19,8 +19,8 @@ package cookies
 
 import (
 	"fmt"
-	"math/rand"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +36,7 @@ const cookieDir = "config/cookies"
 
 var (
 	cachedFiles []string
+	cacheErr    error
 	cacheOnce   sync.Once
 	client      = resty.New().SetTimeout(30 * time.Second)
 )
@@ -93,26 +94,49 @@ func loadCookieCache() error {
 		filtered = append(filtered, f)
 	}
 
+	sort.Strings(filtered)
 	cachedFiles = filtered
 	return nil
 }
 
-func GetRandomCookieFile() (string, error) {
-	var err error
-
+// GetCookieFiles returns the available cookie files in stable, lexical order.
+// A stable order prevents metadata extraction and download from randomly using
+// different YouTube accounts on consecutive requests.
+func GetCookieFiles() ([]string, error) {
 	cacheOnce.Do(func() {
-		err = loadCookieCache()
+		cacheErr = loadCookieCache()
 	})
-
-	if err != nil {
-		utils.Log.Warnf("Failed to load cookie cache: %v", err)
-		return "", err
+	if cacheErr != nil {
+		utils.Log.Warnf("Failed to load cookie cache: %v", cacheErr)
+		return nil, cacheErr
+	}
+	if len(cachedFiles) == 0 {
+		return nil, nil
 	}
 
-	if len(cachedFiles) == 0 {
+	// Return a copy so callers cannot mutate the shared cache.
+	files := make([]string, len(cachedFiles))
+	copy(files, cachedFiles)
+	return files, nil
+}
+
+// GetPreferredCookieFile returns the first available cookie file in stable
+// lexical order. It is kept separate from GetCookieFiles so callers can choose
+// between a single preferred account and explicit fallback handling.
+func GetPreferredCookieFile() (string, error) {
+	files, err := GetCookieFiles()
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
 		utils.Log.Warn("No cookie files available")
 		return "", nil
 	}
+	return files[0], nil
+}
 
-	return cachedFiles[rand.Intn(len(cachedFiles))], nil
+// GetRandomCookieFile is retained for compatibility with any external callers.
+// New downloader code should use GetPreferredCookieFile for consistent results.
+func GetRandomCookieFile() (string, error) {
+	return GetPreferredCookieFile()
 }
